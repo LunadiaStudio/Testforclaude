@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Neon Intro Motion</title>
+<style>
+@font-face{font-family:P;src:url(fonts/Pretendard-Black.otf);font-weight:900}
+@font-face{font-family:P;src:url(fonts/Pretendard-ExtraBold.otf);font-weight:800}
+@font-face{font-family:P;src:url(fonts/Pretendard-Bold.otf);font-weight:700}
+@font-face{font-family:P;src:url(fonts/Pretendard-SemiBold.otf);font-weight:600}
+@font-face{font-family:P;src:url(fonts/Pretendard-Medium.otf);font-weight:500}
+:root{--bg:#0b0b0c;--fg:#f1f1f1;--sub:#9a9a9a;--blue:#3ec8ff;--red:#ff3040;--green:#6cc644}
+*{box-sizing:border-box}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:var(--bg);font-family:P,sans-serif;color:var(--fg);-webkit-font-smoothing:antialiased}
+#stage{position:absolute;left:0;top:0;width:1920px;height:1080px;overflow:hidden}
+#cam{position:absolute;inset:0;transform-origin:50% 50%}
+canvas{position:absolute;left:0;top:0}
+.abs{position:absolute;left:0;top:0}
+.t{position:absolute;left:0;top:0;white-space:nowrap;line-height:1;letter-spacing:-.035em}
+.mask{position:absolute;left:0;top:0;overflow:hidden;padding:.06em .04em .14em;white-space:nowrap;line-height:1;letter-spacing:-.035em}
+.mask>span{display:inline-block}
+.ghost{position:absolute;left:0;top:0;white-space:nowrap;font-weight:900;line-height:.8;letter-spacing:-.05em;color:#131418}
+.thumb{position:relative;overflow:hidden;border-radius:22px;background:#000}
+.thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.hov{position:absolute;left:0;right:0;bottom:0;height:7px;background:rgba(255,255,255,.22);opacity:0}
+.hov i{display:block;height:100%;width:0;background:#ff0033}
+.ttl{font-weight:700;font-size:38px;line-height:1.3;letter-spacing:-.025em}
+.meta{font-weight:500;font-size:27px;color:var(--sub);margin-top:8px;letter-spacing:-.01em}
+.u{position:relative;display:inline-block}
+.u i{position:absolute;left:0;bottom:-2px;height:5px;width:0;border-radius:3px}
+.pill{display:flex;align-items:center;background:#272727;border-radius:60px;height:84px;padding:0 30px;gap:16px;font-weight:700;font-size:36px}
+.pop{font-weight:700;font-size:32px;color:#ff5a66;background:rgba(28,28,30,.92);border:1px solid #2c2c30;border-radius:40px;padding:10px 22px;
+  box-shadow:0 12px 30px rgba(0,0,0,.5);white-space:nowrap}
+.label{font-weight:600;font-size:26px;letter-spacing:.32em;color:var(--sub);white-space:nowrap}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="bg" width="1920" height="1080"></canvas>
+  <div id="cam"></div>
+  <canvas id="fx" width="1920" height="1080"></canvas>
+  <canvas id="grain" width="480" height="270" style="width:1920px;height:1080px;opacity:.06;mix-blend-mode:overlay;image-rendering:pixelated"></canvas>
+  <div class="abs" style="width:1920px;height:1080px;background:radial-gradient(ellipse at 50% 50%,transparent 60%,rgba(0,0,0,.55) 100%);pointer-events:none"></div>
+</div>
+<script>
+// ====== 편집용 설정 ======
+const CONFIG = {
+  title: "모드로 발로란트를 마인크래프트에 구현해봤습니다",
+  meta: "시플 · 조회수 46만회 · 1개월 전",
+  views: 465000,
+  likes: 3800,
+  comments: 189,
+};
+// =========================
+
+const W = 1920, H = 1080;
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const p = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, x) => a + (b - a) * x;
+const E = {
+  out: x => 1 - Math.pow(1 - x, 3),
+  expo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  in: x => x * x * x,
+  inOut: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  inOut4: x => x < .5 ? 8 * x ** 4 : 1 - Math.pow(-2 * x + 2, 4) / 2,
+};
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const cam = document.getElementById('cam');
+function el(html, parent = cam) { const d = document.createElement('div'); d.innerHTML = html.trim(); const e = d.firstChild; parent.appendChild(e); return e; }
+// (x,y) = 요소 중심
+function tf(e, { x = 0, y = 0, s = 1, r = 0, o = 1, blur = 0, rx = 0, persp = 0 } = {}) {
+  e.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%) ${persp ? `perspective(${persp}px) rotateX(${rx}deg)` : ''} rotate(${r}deg) scale(${s})`;
+  e.style.opacity = o; e.style.filter = blur > 0.05 ? `blur(${blur}px)` : '';
+}
+// 마스크 리빌 텍스트
+function maskText(html, style) { const m = el(`<div class="mask" style="${style}"><span>${html}</span></div>`); return { m, i: m.firstChild }; }
+function reveal(mt, k) { mt.i.style.transform = `translateY(${(1 - E.expo(k)) * 115}%)`; }
+const fmt = n => Math.round(n).toLocaleString('en-US');
+function shake(t, t0, dur, amp, f = 40) { const k = p(t, t0, t0 + dur); if (k <= 0 || k >= 1) return [0, 0]; const d = (1 - k) ** 2 * amp; return [Math.sin(t * f) * d, Math.cos(t * f * 1.3) * d]; }
+
+const bg = document.getElementById('bg').getContext('2d');
+const fx = document.getElementById('fx').getContext('2d');
+const grain = document.getElementById('grain').getContext('2d');
+const grainImg = grain.createImageData(480, 270);
+function drawGrain(frame) {
+  const r = rng(frame * 9973 + 7), d = grainImg.data;
+  for (let i = 0; i < d.length; i += 4) { const v = r() * 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  grain.putImageData(grainImg, 0, 0);
+}
+// 배경: 거의 검정 + 은은한 앰비언트 라이트
+function drawBg(t, { blue = .18, warm = 0, cx = 960, cy = 560 } = {}) {
+  bg.fillStyle = '#0b0b0c'; bg.fillRect(0, 0, W, H);
+  if (blue > 0) {
+    const g = bg.createRadialGradient(cx, cy, 40, cx, cy, 950);
+    g.addColorStop(0, `rgba(40,140,255,${blue})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+    bg.fillStyle = g; bg.fillRect(0, 0, W, H);
+  }
+  if (warm > 0) {
+    const g = bg.createRadialGradient(960, 1250, 50, 960, 1250, 1100);
+    g.addColorStop(0, `rgba(255,70,40,${warm})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+    bg.fillStyle = g; bg.fillRect(0, 0, W, H);
+  }
+}
+function embers(ctx, t, { n = 40, seed = 1, intensity = 1 }) {
+  if (intensity <= 0) return;
+  const r = rng(seed); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const x0 = r() * W, life = 3 + r() * 3, off = r() * life, sz = 1 + r() * 2, sw = r() * 6;
+    const k = ((t + off) % life) / life, x = x0 + Math.sin((t + off) * 1.2 + sw) * 25, y = H + 20 - k * H * .7;
+    const a = Math.sin(k * Math.PI) * intensity * .7;
+    ctx.fillStyle = `rgba(255,${120 + (i % 3) * 40},70,${a})`; ctx.beginPath(); ctx.arc(x, y, sz, 0, 7); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+const THUMB_SVG = `<svg viewBox="0 0 24 24" width="100%" height="100%"><path fill="currentColor" d="M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 6.59 7.59C6.22 7.95 6 8.45 6 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg>`;
+const DISLIKE_SVG = `<svg viewBox="0 0 24 24" width="100%" height="100%" style="transform:scale(-1,-1)"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M2.5 21h3.5V9.5H2.5V21zm5-1.5V9.8l5.4-6.4c.5-.6 1.5-.3 1.5.5l-.8 4.6h5.7c1.2 0 2 1.1 1.7 2.2l-2 6.9c-.3.9-1.1 1.4-2 1.4H7.5z"/></svg>`;
+const CHECK_SVG = `<svg viewBox="0 0 24 24" width="100%" height="100%"><path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+const CURSOR_SVG = `<svg width="56" height="80" viewBox="0 0 24 34"><path d="M1 1 L1 27 L7.5 21 L12 32 L16.5 30 L12 19.5 L21 19.5 Z" fill="#fff" stroke="#000" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+const titleHTML = () => CONFIG.title
+  .replace('발로란트', `<span class="u">발로란트<i style="background:#ff4655"></i></span>`)
+  .replace('마인크래프트', `<span class="u">마인크래프트<i style="background:var(--green)"></i></span>`);
+
+// =================== SCENE 1 ===================
+// "지난달, 저는 발로란트의 요원 네온을 마인크래프트로 구현해봤습니다."
+function scene1() {
+  const DUR = 5.5;
+  const ghost = el(`<div class="ghost" style="font-size:560px">NEON</div>`);
+  const head = maskText('지난달,', 'font-size:150px;font-weight:800');
+  const rule = el(`<div class="abs" style="height:4px;background:var(--blue);border-radius:2px"></div>`);
+  const TW = 1040;
+  const card = el(`<div class="abs" style="width:${TW}px">
+    <div class="thumb" style="height:${TW * 9 / 16}px;box-shadow:0 40px 100px rgba(0,0,0,.6)"><img src="assets/neon_thumb.webp"><div class="hov"><i></i></div></div>
+    <div style="display:flex;gap:22px;margin-top:26px">
+      <img src="assets/avatar.png" style="width:66px;height:66px;border-radius:50%;flex:none">
+      <div><div class="ttl">${titleHTML()}</div><div class="meta">${CONFIG.meta}</div></div>
+    </div></div>`);
+  const thumb = card.querySelector('.thumb'), hov = card.querySelector('.hov'), hovBar = hov.firstChild;
+  const unders = [...card.querySelectorAll('.u i')];
+  const cursor = el(`<div class="abs" style="filter:drop-shadow(0 6px 10px rgba(0,0,0,.5))">${CURSOR_SVG}</div>`);
+  const ripple = el(`<div class="abs" style="width:120px;height:120px;border-radius:50%;border:3px solid rgba(255,255,255,.9)"></div>`);
+  return { DUR, render(t) {
+    drawBg(t, { blue: .06 + .14 * E.out(p(t, .9, 2.0)) });
+    tf(ghost, { x: 1000 - t * 30, y: 560, o: E.out(p(t, .9, 1.8)) });
+    // "지난달," 리빌 → 좌상단 캡션
+    const m = E.inOut(p(t, .95, 1.5));
+    reveal(head, p(t, .05, .7));
+    tf(head.m, { x: lerp(960, 178, m), y: lerp(520, 104, m), s: lerp(1, .32, m) });
+    rule.style.width = lerp(E.expo(p(t, .35, .95)) * 150, 0, m) + 'px';
+    tf(rule, { x: 960, y: 625, o: 1 - m });
+    // 카드: 원근감 있게 올라와 안착
+    const ci = E.expo(p(t, 1.0, 2.1)), push = E.inOut(p(t, 1.6, DUR));
+    tf(card, { x: 960, y: lerp(1150, 585, ci), persp: 1800, rx: lerp(32, 0, ci), s: lerp(.92, 1, ci) * (1 + push * .035), o: p(t, 1.0, 1.25) });
+    // 제목 키워드 밑줄
+    unders[0].style.width = E.expo(p(t, 2.1, 2.6)) * 100 + '%';
+    unders[1].style.width = E.expo(p(t, 2.75, 3.25)) * 100 + '%';
+    // 커서: 진입 → 썸네일 호버 → 클릭
+    const cm = E.inOut(p(t, 3.0, 3.75));
+    const press = (t > 4.55 && t < 4.75) ? .86 : 1;
+    tf(cursor, { x: lerp(1820, 1180, cm) + 22, y: lerp(1160, 470, cm) + 34, s: press, o: p(t, 3.0, 3.1) });
+    const hv = E.out(p(t, 3.6, 3.9));
+    thumb.style.transform = `scale(${1 + hv * .012})`;
+    hov.style.opacity = hv; hovBar.style.width = E.inOut(p(t, 3.7, 5.5)) * 100 + '%';
+    const rp = p(t, 4.6, 5.1);
+    tf(ripple, { x: 1180, y: 470, s: lerp(.2, 1.4, E.out(rp)), o: rp > 0 && rp < 1 ? (1 - rp) * .8 : 0 });
+    const zoom = E.in(p(t, 4.7, DUR));
+    cam.style.transformOrigin = '1060px 450px';
+    cam.style.transform = `scale(${1 + zoom * .08})`;
+  } };
+}
+
+// =================== SCENE 2 ===================
+// "그 영상의 반응은 그야말로 엄청나게 뜨거웠는데요."
+function scene2() {
+  const DUR = 5.5;
+  const rows = [`${fmt(CONFIG.views)} VIEWS · `, `${fmt(CONFIG.likes)} LIKES · `, `${CONFIG.comments} COMMENTS · `]
+    .map(s => el(`<div class="ghost" style="font-size:250px">${s.repeat(6)}</div>`));
+  const cap = maskText('그 영상의 반응은', 'font-size:44px;font-weight:700');
+  const dot = el(`<div class="abs" style="width:12px;height:12px;border-radius:50%;background:var(--blue)"></div>`);
+  const TW = 980;
+  const card = el(`<div class="abs" style="width:${TW}px;border-radius:28px;overflow:hidden;background:#161617;box-shadow:0 50px 120px rgba(0,0,0,.7),0 0 0 1px #242427">
+    <div class="thumb" style="height:${TW * 9 / 16}px;border-radius:0"><img src="assets/neon_thumb.webp"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;height:156px;padding:0 40px">
+      <div><div style="font-weight:600;font-size:26px;color:var(--sub);margin-bottom:10px">조회수</div>
+        <div style="display:flex;align-items:baseline;gap:6px"><span class="views" style="display:inline-block;transform-origin:left bottom;font-weight:800;font-size:72px;letter-spacing:-.035em;font-variant-numeric:tabular-nums;line-height:1">0</span><span style="font-weight:700;font-size:40px;color:var(--sub)">회</span></div></div>
+      <div class="pill"><div class="ticon" style="width:44px;height:44px">${THUMB_SVG}</div><span class="likes" style="font-variant-numeric:tabular-nums">0</span>
+        <div style="width:2px;height:44px;background:#444;margin:0 8px"></div><div style="width:40px;height:40px;color:#ddd">${DISLIKE_SVG}</div></div>
+    </div></div>`);
+  const viewsEl = card.querySelector('.views'), likesEl = card.querySelector('.likes'), ticon = card.querySelector('.ticon');
+  const pops = []; const pr = rng(7);
+  for (let i = 0; i < 9; i++) pops.push({ t0: .7 + i * .24, x: i % 2 ? lerp(1640, 1760, pr()) : lerp(160, 280, pr()), y: lerp(560, 720, pr()), amt: Math.round(lerp(2000, 12000, pr()) / 10) * 10 });
+  const popEls = pops.map(q => el(`<div class="abs pop">▲ +${fmt(q.amt)}</div>`));
+  const kick = maskText('그야말로', 'font-size:46px;font-weight:700;color:#cfcfcf');
+  const hot = maskText('엄청나게 <span style="color:var(--red)">뜨거웠다</span>', 'font-size:132px;font-weight:800');
+  const C0 = .45, C1 = 3.0;
+  return { DUR, render(t) {
+    const k = E.inOut4(p(t, C0, C1));
+    drawBg(t, { blue: .12 * (1 - k), warm: .28 * E.inOut(p(t, .6, 3.4)), cy: 480 });
+    // 배경 타이포: 실제 수치
+    const gc = Math.round(lerp(18, 25, k));
+    rows.forEach((r, i) => { r.style.color = `rgb(${gc},${gc},${gc + 3})`; const d = i % 2 ? 1 : -1; tf(r, { x: 960 + d * t * 60, y: 170 + i * 370 }); });
+    // 캡션
+    reveal(cap, p(t, .1, .7)); tf(cap.m, { x: 245, y: 104 }); tf(dot, { x: 82, y: 106, s: E.expo(p(t, .05, .4)) });
+    // 카드
+    const ci = E.expo(p(t, 0, .8)), up = E.inOut(p(t, 2.95, 3.5));
+    tf(card, { x: 960, y: lerp(560, 492, ci) - up * 112, s: lerp(.95, 1, ci) * lerp(1, .8, up), o: p(t, 0, .2) });
+    // 카운트업
+    const jit = k > 0 && k < 1 ? (Math.floor(t * 30) * 7) % 97 : 0;
+    viewsEl.textContent = fmt(k >= 1 ? CONFIG.views : Math.max(0, CONFIG.views * k - jit));
+    likesEl.textContent = fmt(k >= 1 ? CONFIG.likes : Math.max(0, Math.floor(CONFIG.likes * k)));
+    const land = p(t, C1, C1 + .5), pulse = land > 0 && land < 1 ? Math.sin(land * Math.PI) : 0;
+    viewsEl.style.color = `rgb(255,${lerp(241, 70, pulse)},${lerp(241, 80, pulse)})`;
+    viewsEl.style.transform = `scale(${1 + pulse * .06})`;
+    const beat = k > 0 && k < 1 ? Math.pow(1 - ((t * 3) % 1), 4) : 0;
+    ticon.style.transform = `scale(${1 + beat * .1 + pulse * .25}) rotate(${-(beat * 6 + pulse * 14)}deg)`;
+    // 증가 팝업
+    popEls.forEach((e, i) => { const q = pops[i], kk = p(t, q.t0, q.t0 + 1.2); tf(e, { x: q.x, y: q.y - E.out(kk) * 220, s: lerp(.9, 1, E.expo(kk)), o: kk > 0 && kk < 1 ? Math.min(1, Math.sin(kk * Math.PI) * 1.6) : 0 }); });
+    // 헤드라인
+    reveal(kick, p(t, 3.05, 3.6)); tf(kick.m, { x: 960, y: 800 });
+    reveal(hot, p(t, 3.2, 3.85)); tf(hot.m, { x: 960, y: 908, s: 1 + p(t, 3.2, DUR) * .03 });
+    const [sx, sy] = shake(t, C1, .3, 5);
+    cam.style.transform = `translate(${sx}px,${sy}px) scale(${1 + E.inOut(p(t, 0, DUR)) * .03})`;
+    fx.clearRect(0, 0, W, H);
+    embers(fx, t, { n: 45, seed: 11, intensity: E.inOut(p(t, 1.2, 3.6)) });
+  } };
+}
+
+// =================== SCENE 3 ===================
+// "그래서 저는 이 기세를 이어서 이번에는 옆동네의 게임도 마인크래프트로 만들어보기로 했습니다."
+function scene3() {
+  const DUR = 7;
+  const ghost = el(`<div class="ghost" style="font-size:520px">NEXT</div>`);
+  // A
+  const A = ['이', '기세를', '이어서'].map(w => maskText(w, 'font-size:156px;font-weight:800'));
+  const AX = [521, 830, 1269];
+  const line = el(`<div class="abs" style="height:4px;border-radius:2px;background:linear-gradient(90deg,rgba(62,200,255,0),var(--blue))"></div>`);
+  // B
+  const bKick = maskText('이번에는', 'font-size:52px;font-weight:700;color:#bdbdbd');
+  const bRow = el(`<div class="abs" style="display:flex;align-items:center;white-space:nowrap;font-weight:800;font-size:156px;letter-spacing:-.035em;line-height:1">
+      <div class="hl" style="position:relative;padding:14px 28px 26px"><div class="box" style="position:absolute;inset:0;background:var(--blue);border-radius:14px;transform-origin:left center"></div><span style="position:relative;color:#04121c">옆동네</span></div>
+      <div class="rest" style="overflow:hidden;padding:14px 0 26px 12px"><span style="display:inline-block">의 게임도</span></div></div>`);
+  const bBox = bRow.querySelector('.box'), bHl = bRow.querySelector('.hl span'), bRest = bRow.querySelector('.rest span');
+  // C
+  const SW = 660, SH = SW * 9 / 16;
+  const left = el(`<div class="abs" style="width:${SW}px"><div class="thumb" style="height:${SH}px;box-shadow:0 30px 80px rgba(0,0,0,.6)"><img src="assets/neon_thumb.webp"></div></div>`);
+  const leftLbl = el(`<div class="abs" style="display:flex;align-items:center;gap:12px"><div style="width:34px;height:34px;border-radius:50%;background:var(--blue);color:#04121c;padding:5px">${CHECK_SVG}</div><span class="label" style="color:#cfcfcf">VALORANT</span></div>`);
+  const right = el(`<div class="abs" style="width:${SW}px;height:${SH}px;border-radius:22px;overflow:hidden;background:#15171c;box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.1)">
+    <canvas width="330" height="186" style="width:100%;height:100%;filter:blur(18px);transform:scale(1.2)"></canvas>
+    <div class="q t" style="font-size:210px;font-weight:600;color:rgba(255,255,255,.92)">?</div></div>`);
+  const rctx = right.querySelector('canvas').getContext('2d'), qEl = right.querySelector('.q');
+  const rightLbl = el(`<div class="abs label">NEXT GAME</div>`);
+  const arrow = el(`<svg class="abs" width="140" height="40" viewBox="0 0 140 40"><path class="ln" d="M4 20 H128 M112 6 L130 20 L112 34" fill="none" stroke="#f1f1f1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="200" stroke-dashoffset="200"/></svg>`);
+  const arrowPath = arrow.querySelector('.ln');
+  const fin = maskText('<span style="color:var(--green)">마인크래프트</span>로 만들어보기로 했습니다', 'font-size:92px;font-weight:800');
+  return { DUR, render(t) {
+    drawBg(t, { blue: .05 + .12 * E.out(p(t, 3.4, 4.4)), cy: 470 });
+    tf(ghost, { x: 1010 - t * 25, y: 520, o: E.out(p(t, 3.5, 4.5)) });
+    // A: 이 기세를 이어서
+    const aOut = p(t, 1.45, 1.8);
+    A.forEach((w, i) => { const t0 = .05 + i * .12; reveal(w, p(t, t0, t0 + .6)); tf(w.m, { x: AX[i] - E.in(aOut) * 260, y: 500, o: 1 - aOut, blur: E.in(aOut) * 14 }); });
+    const lw = E.expo(p(t, .45, 1.2)) * 1007;
+    line.style.width = lw + 'px'; tf(line, { x: 456 + lw / 2 - E.in(aOut) * 260, y: 625, o: 1 - aOut });
+    // B: 이번에는 옆동네의 게임도
+    const bOut = E.in(p(t, 3.05, 3.4));
+    reveal(bKick, p(t, 1.75, 2.3)); tf(bKick.m, { x: 960, y: 390 - bOut * 40, o: 1 - bOut, blur: bOut * 10 });
+    bBox.style.transform = `scaleX(${E.expo(p(t, 1.95, 2.45))})`;
+    bHl.style.opacity = p(t, 2.1, 2.3);
+    bRest.style.transform = `translateY(${(1 - E.expo(p(t, 2.3, 2.9))) * 115}%)`;
+    tf(bRow, { x: 960, y: 540 - bOut * 40, o: 1 - bOut, blur: bOut * 10 });
+    // C: 지난 영상 → 다음 게임
+    const li = E.expo(p(t, 3.4, 4.3)), ri = E.expo(p(t, 3.6, 4.5)), push = E.inOut(p(t, 3.4, DUR));
+    tf(left, { x: lerp(260, 540, li), y: 440, o: p(t, 3.4, 3.6) * .9, s: .98 });
+    tf(leftLbl, { x: 540, y: 205, o: E.out(p(t, 4.0, 4.4)) });
+    tf(right, { x: lerp(1660, 1380, ri), y: 440, o: p(t, 3.6, 3.8) });
+    tf(rightLbl, { x: 1380, y: 205, o: E.out(p(t, 4.1, 4.5)) });
+    arrowPath.setAttribute('stroke-dashoffset', 200 * (1 - E.inOut(p(t, 4.25, 4.7))));
+    tf(arrow, { x: 960 + Math.sin(t * 4) * 4 * p(t, 4.7, 5), y: 440 });
+    // 미스터리 카드: 흐르는 색 덩어리
+    rctx.fillStyle = '#12141a'; rctx.fillRect(0, 0, 330, 186);
+    [[255, 120, 60], [140, 90, 255], [60, 200, 160]].forEach((c, i) => {
+      const x = 165 + Math.sin(t * .8 + i * 2.1) * 110, y = 93 + Math.cos(t * .6 + i * 1.7) * 60;
+      const g = rctx.createRadialGradient(x, y, 0, x, y, 120); g.addColorStop(0, `rgba(${c},.55)`); g.addColorStop(1, `rgba(${c},0)`);
+      rctx.fillStyle = g; rctx.fillRect(0, 0, 330, 186);
+    });
+    tf(qEl, { x: SW / 2, y: SH / 2 + Math.sin(t * 2) * 6, s: lerp(.6, 1, E.expo(p(t, 4.0, 4.6))), o: p(t, 4.0, 4.3) });
+    reveal(fin, p(t, 4.6, 5.3)); tf(fin.m, { x: 960, y: 820 });
+    cam.style.transform = `scale(${1 + push * .035})`;
+  } };
+}
+
+const params = new URLSearchParams(location.search);
+const SCENE = { 1: scene1, 2: scene2, 3: scene3 }[params.get('scene') || '1']();
+window.DUR = SCENE.DUR;
+window.__render = (t, frame = 0) => { SCENE.render(t); drawGrain(frame); };
+window.__ready = Promise.all([document.fonts.ready, ...[...document.images].map(i => i.decode().catch(() => {}))]);
+if (!params.has('capture')) { const st = performance.now(); (function loop() { const t = ((performance.now() - st) / 1000) % SCENE.DUR; window.__render(t, Math.floor(t * 30)); requestAnimationFrame(loop); })(); }
+</script>
+</body>
+</html>
